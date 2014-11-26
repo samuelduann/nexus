@@ -51,7 +51,7 @@ func NewNexus(confFilename string) *Nexus {
 	n.config = GetConfig()
 	n.config.Load(confFilename)
 	n.l1cache = NewL1Cache()
-	logger = log4g.NewLogger(n.config.LogPrefix, log4g.FilenameSuffixInDay)
+	logger = log4g.NewLogger(n.config.LogPrefix, log4g.FilenameSuffixInHour)
 	return n
 }
 
