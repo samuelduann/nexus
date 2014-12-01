@@ -10,6 +10,7 @@ import (
 	"github.com/samuelduann/log4g"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -73,13 +74,13 @@ func (nx *Nexus) queryCache(req *NxRequest) *goshine.GsResultSet {
 	return nil
 }
 
-func (nx *Nexus) makeResponse(w http.ResponseWriter, r *http.Request, response *NxResponse) {
+func (nx *Nexus) makeResponse(w http.ResponseWriter, r *http.Request, response *NxResponse, timing *Timing) {
 	data, _ := json.Marshal(response)
 	w.Write(data)
 	if response.Code == 200 {
-		logger.Infof("%s %s - %s %d %s", r.RemoteAddr, r.Method, r.URL, response.Code, response.Message)
+		logger.Infof("%s %s %s %d %s [%s]", r.RemoteAddr, r.Method, r.URL, response.Code, response.Message, timing)
 	} else {
-		logger.Warnf("%s %s - %s %d %s", r.RemoteAddr, r.Method, r.URL, response.Code, response.Message)
+		logger.Warnf("%s %s %s %d %s [%s]", r.RemoteAddr, r.Method, r.URL, response.Code, response.Message, timing)
 	}
 }
 
@@ -93,64 +94,89 @@ func (nx *Nexus) parseRequest(r *http.Request) *NxRequest {
 }
 
 func (nx *Nexus) QueryHandler(w http.ResponseWriter, r *http.Request) {
+	timing := NewTiming()
 	request := nx.parseRequest(r)
 	if request == nil {
-		nx.makeResponse(w, r, &Response_400)
+		nx.makeResponse(w, r, &Response_400, timing)
 		return
 	}
 	// try fetch from cache
+	timing.TickStart("ReadCache1")
 	if result := nx.queryCache(request); result != nil {
-		nx.makeResponse(w, r, &NxResponse{Code: 200, Message: "Ok", Body: result})
+		nx.makeResponse(w, r, &NxResponse{Code: 200, Message: "Ok", Body: result}, timing)
 		return
 	}
+	timing.TickStop("ReadCache1")
+
 	// get an agent
+	timing.TickStart("AssignAgent")
 	g := nx.assignAgent(request)
 	if g == nil {
-		nx.makeResponse(w, r, &Response_503)
+		nx.makeResponse(w, r, &Response_503, timing)
 		return
 	}
 	defer func() {
 		if err := recover(); err != nil {
 			nx.freeAgent(g)
-			nx.makeResponse(w, r, &Response_500)
+			nx.makeResponse(w, r, &Response_500, timing)
+			if nx.config.DebugMode == true {
+				debug.PrintStack()
+			}
 		}
 	}()
+	timing.TickStop("AssignAgent")
+
+	timing.TickStart("ReadCache2")
 	// try fetch from cache again, in a very special case
 	if result := nx.queryCache(request); result != nil {
 		nx.freeAgent(g)
-		nx.makeResponse(w, r, &NxResponse{Code: 200, Message: "Ok", Body: result})
+		nx.makeResponse(w, r, &NxResponse{Code: 200, Message: "Ok", Body: result}, timing)
 		return
 	}
-	//
+	timing.TickStop("ReadCache2")
+
+	timing.TickStart("Spark")
 	result, err := g.gs.FetchAll(request.Hql)
+	timing.TickStop("Spark")
+
 	// put agent back
 	nx.freeAgent(g)
+
 	if err != nil {
-		nx.makeResponse(w, r, &NxResponse{Code: 500, Message: fmt.Sprintf("%s", err)})
+		nx.makeResponse(w, r, &NxResponse{Code: 500, Message: fmt.Sprintf("%s", err)}, timing)
 		return
 	}
+
 	// put cache
+	timing.TickStart("UpdateCache")
 	nx.updateCache(request, result)
+	timing.TickStop("UpdateCache")
+
 	// return result
-	nx.makeResponse(w, r, &NxResponse{Code: 200, Message: "Ok", Body: result})
+	nx.makeResponse(w, r, &NxResponse{Code: 200, Message: "Ok", Body: result}, timing)
 }
 
 func (nx *Nexus) ExecuteHandler(w http.ResponseWriter, r *http.Request) {
+	timing := NewTiming()
 	request := nx.parseRequest(r)
 	if request == nil {
-		nx.makeResponse(w, r, &Response_400)
+		nx.makeResponse(w, r, &Response_400, timing)
 		return
 	}
 	// get an agent and execute
+	timing.TickStart("AssignAgent")
 	g := nx.assignAgent(request)
 	if g == nil {
-		nx.makeResponse(w, r, &Response_503)
+		nx.makeResponse(w, r, &Response_503, timing)
 		return
 	}
+	timing.TickStop("AssignAgent")
+
+	timing.TickStart("Spark")
 	if err := g.gs.Execute(request.Hql); err != nil {
-		nx.makeResponse(w, r, &NxResponse{Code: 500, Message: fmt.Sprintf("%s", err)})
+		nx.makeResponse(w, r, &NxResponse{Code: 500, Message: fmt.Sprintf("%s", err)}, timing)
 	} else {
-		nx.makeResponse(w, r, &Response_200)
+		nx.makeResponse(w, r, &Response_200, timing)
 	}
 	nx.freeAgent(g)
 }

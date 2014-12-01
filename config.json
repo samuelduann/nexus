@@ -1,0 +1,15 @@
+{
+    "GoshineList": [
+        {"Host": "hdtest1", "Port": 10000},
+        {"Host": "hdtest2", "Port": 10000},
+        {"Host": "hdtest3", "Port": 10000},
+        {"Host": "hdtest4", "Port": 10000},
+        {"Host": "hdtest5", "Port": 10000}
+    ],
+    "CacheTimeout": 60,
+    "Host": "0",
+    "Port": 8881,
+    "Database": "mcoffline",
+    "LogPrefix": "logs/nexus_log",
+    "DebugMode": true
+}
