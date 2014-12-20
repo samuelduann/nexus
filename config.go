@@ -12,13 +12,13 @@ type GoshineConfig struct {
 }
 
 type Config struct {
-	GoshineList  []GoshineConfig
-	CacheTimeout int
-	Host         string
-	Port         int
-	Database     string
-	LogPrefix    string
-	DebugMode    bool
+	GoshineClusters map[string][]GoshineConfig
+	CacheTimeout    int
+	Host            string
+	Port            int
+	Database        string
+	LogPrefix       string
+	DebugMode       bool
 }
 
 var conf Config

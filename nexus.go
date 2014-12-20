@@ -22,13 +22,14 @@ type GoshineAgent struct {
 }
 
 type Nexus struct {
-	agentPool []*GoshineAgent
-	l1cache   *L1Cache
-	config    *Config
+	clusters map[string][]*GoshineAgent
+	l1cache  *L1Cache
+	config   *Config
 }
 
 type NxRequest struct {
-	Hql string
+	Hql         string
+	ClusterName string
 }
 
 type NxResponse struct {
@@ -90,7 +91,11 @@ func (nx *Nexus) parseRequest(r *http.Request) *NxRequest {
 	if !ok || len(hql[0]) == 0 {
 		return nil
 	}
-	return &NxRequest{Hql: hql[0]}
+	cluster, ok := r.Form["cluster"]
+	if !ok || len(cluster[0]) == 0 {
+		return nil
+	}
+	return &NxRequest{Hql: hql[0], ClusterName: cluster[0]}
 }
 
 func (nx *Nexus) QueryHandler(w http.ResponseWriter, r *http.Request) {
@@ -110,9 +115,9 @@ func (nx *Nexus) QueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// get an agent
 	timing.TickStart("AssignAgent")
-	g := nx.assignAgent(request)
-	if g == nil {
-		nx.makeResponse(w, r, &Response_503, timing)
+	g, err := nx.assignAgent(request)
+	if err != nil {
+		nx.makeResponse(w, r, &NxResponse{Code: 504, Message: fmt.Sprintf("%s", err)}, timing)
 		return
 	}
 	defer func() {
@@ -165,9 +170,9 @@ func (nx *Nexus) ExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// get an agent and execute
 	timing.TickStart("AssignAgent")
-	g := nx.assignAgent(request)
-	if g == nil {
-		nx.makeResponse(w, r, &Response_503, timing)
+	g, err := nx.assignAgent(request)
+	if err != nil {
+		nx.makeResponse(w, r, &NxResponse{Code: 504, Message: fmt.Sprintf("%s", err)}, timing)
 		return
 	}
 	timing.TickStop("AssignAgent")
@@ -181,46 +186,55 @@ func (nx *Nexus) ExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	nx.freeAgent(g)
 }
 
-func (nx *Nexus) initAgentPool() error {
-	nx.agentPool = make([]*GoshineAgent, len(nx.config.GoshineList), len(nx.config.GoshineList))
-	for i, gconf := range nx.config.GoshineList {
-		g := goshine.NewGoshine(gconf.Host, gconf.Port, "user0", "passwd0", nx.config.Database)
-		if err := g.Connect(); err != nil {
-			logger.Warnf("init goshine agent%d %s:%d failed, err: %s", i, gconf.Host, gconf.Port, err)
-			return errors.New("init goshine failed")
+func (nx *Nexus) initClusters() error {
+	nx.clusters = make(map[string][]*GoshineAgent)
+	for cluster_name, cluster_config := range nx.config.GoshineClusters {
+		nx.clusters[cluster_name] = make([]*GoshineAgent, len(cluster_config), len(cluster_config))
+		for i, gconf := range cluster_config {
+			g := goshine.NewGoshine(gconf.Host, gconf.Port, "user0", "passwd0", nx.config.Database)
+			if err := g.Connect(); err != nil {
+				logger.Warnf("init goshine agent %s:%d %s:%d failed, err: %s", cluster_name, i, gconf.Host, gconf.Port, err)
+				return errors.New("init goshine failed")
+			}
+			logger.Infof("goshine agent %s:%d %s:%d activated", cluster_name, i, gconf.Host, gconf.Port)
+			nx.clusters[cluster_name][i] = &GoshineAgent{id: i, gs: g}
 		}
-		logger.Infof("goshine agent%d %s:%d activated", i, gconf.Host, gconf.Port)
-		nx.agentPool[i] = &GoshineAgent{id: i, gs: g}
 	}
 	go nx.agentMaintenance()
 	return nil
 }
 
-func (nx *Nexus) getAgentId(req *NxRequest) int {
+func (nx *Nexus) getAgentId(req *NxRequest, cluster []*GoshineAgent) int {
 	checksum := 0
 	for _, chr := range req.Hql {
-		checksum = (checksum + int(chr)) % len(nx.agentPool)
+		checksum = (checksum + int(chr)) % len(cluster)
 	}
 	return checksum
 }
 
-func (nx *Nexus) assignAgent(request *NxRequest) *GoshineAgent {
+func (nx *Nexus) assignAgent(request *NxRequest) (*GoshineAgent, error) {
+	// check if the cluster exists
+	cluster, ok := nx.clusters[request.ClusterName]
+	if !ok {
+		logger.Warnf("cluster %s does not exists", request.ClusterName)
+		return nil, errors.New("No Such Cluster")
+	}
 	//map request to an available agent id
-	i := nx.getAgentId(request)
+	i := nx.getAgentId(request, cluster)
 	id := -1
-	for skip := 0; skip < len(nx.agentPool); skip++ {
-		if nx.agentPool[(i+skip)%len(nx.agentPool)].gs.GetStatus() == goshine.GS_STATUS_CONNECTED {
-			id = (i + skip) % len(nx.agentPool)
+	for skip := 0; skip < len(cluster); skip++ {
+		id = (i + skip) % len(cluster)
+		if cluster[id].gs.GetStatus() == goshine.GS_STATUS_CONNECTED {
 			break
 		}
-		logger.Warnf("agent%d is down, try next..", i)
+		logger.Warnf("agent %s:%d is down, trying next..", request.ClusterName, i)
 	}
 	if id == -1 {
-		return nil
+		return nil, errors.New("System Is Down")
 	}
 	// try get control of that agent
-	nx.agentPool[id].lock.Lock()
-	return nx.agentPool[id]
+	cluster[id].lock.Lock()
+	return cluster[id], nil
 }
 
 func (nx *Nexus) freeAgent(ga *GoshineAgent) {
@@ -232,13 +246,15 @@ func (nx *Nexus) agentMaintenance() {
 	ticker := time.Tick(10 * time.Second)
 	for {
 		<-ticker
-		for i, ga := range nx.agentPool {
-			if ga.gs.GetStatus() == goshine.GS_STATUS_ERROR {
-				logger.Warnf("agent%d is in error status, trying to recover...", i)
-				if err := ga.gs.Connect(); err != nil {
-					logger.Warnf("agent%d recovering failed err: %s", i, err)
-				} else {
-					logger.Warnf("agent%d recovered", i)
+		for cluster_name, gas := range nx.clusters {
+			for i, ga := range gas {
+				if ga.gs.GetStatus() == goshine.GS_STATUS_ERROR {
+					logger.Warnf("agent %s:%d is in error status, trying to recover...", cluster_name, i)
+					if err := ga.gs.Connect(); err != nil {
+						logger.Warnf("agent%d recovering failed err: %s", i, err)
+					} else {
+						logger.Warnf("agent%d recovered", i)
+					}
 				}
 			}
 		}
@@ -246,8 +262,8 @@ func (nx *Nexus) agentMaintenance() {
 }
 
 func (nx *Nexus) Start() bool {
-	if nx.initAgentPool() != nil {
-		logger.Warnf("initAgentPool failed, abort")
+	if nx.initClusters() != nil {
+		logger.Warnf("initClusters failed, abort")
 		return false
 	}
 	http.HandleFunc("/query", nx.QueryHandler)
