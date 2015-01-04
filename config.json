@@ -1,15 +1,27 @@
 {
-    "GoshineList": [
-        {"Host": "hdtest1", "Port": 10000},
-        {"Host": "hdtest2", "Port": 10000},
-        {"Host": "hdtest3", "Port": 10000},
-        {"Host": "hdtest4", "Port": 10000},
-        {"Host": "hdtest5", "Port": 10000}
+    "GoshineClusters": {
+        "OLAP": [
+            {"Host": "mc-dw1", "Port": 10000},
+            {"Host": "mc-dw2", "Port": 10000},
+            {"Host": "mc-dw3", "Port": 10000},
+            {"Host": "spi-wdb6", "Port": 10000},
+            {"Host": "spi-wdb7", "Port": 10000},
+            {"Host": "spi-wdb8", "Port": 10000},
+            {"Host": "spi-wdb9", "Port": 10000}
+        ],
+        "DI": [
+            {"Host": "spi-wdb11", "Port": 10000},
+            {"Host": "spi-wdb10", "Port": 10000}
+        ]
+    },
+    "UDFLoaders": [
+        "CREATE TEMPORARY FUNCTION week AS 'com.haizhi.bdp.udf.UDFWeekOfYear'",
+        "CREATE TEMPORARY FUNCTION quarter AS 'com.haizhi.bdp.udf.UDFQuarterOfYear'"
     ],
     "CacheTimeout": 60,
     "Host": "0",
     "Port": 8881,
-    "Database": "mcoffline",
-    "LogPrefix": "logs/nexus_log",
-    "DebugMode": true
+    "Database": "mconline",
+    "LogPrefix": "../logs/nexus_log",
+    "DebugMode": false
 }

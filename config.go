@@ -13,6 +13,7 @@ type GoshineConfig struct {
 
 type Config struct {
 	GoshineClusters map[string][]GoshineConfig
+	UDFLoaders      []string
 	CacheTimeout    int
 	Host            string
 	Port            int

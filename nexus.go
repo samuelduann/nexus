@@ -16,9 +16,10 @@ import (
 )
 
 type GoshineAgent struct {
-	id   int
-	gs   *goshine.Goshine
-	lock sync.Mutex
+	cluster string
+	id      int
+	gs      *goshine.Goshine
+	lock    sync.Mutex
 }
 
 type Nexus struct {
@@ -186,6 +187,15 @@ func (nx *Nexus) ExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	nx.freeAgent(g)
 }
 
+func (nx *Nexus) loadUDF(ga *GoshineAgent) error {
+	for _, hql := range nx.config.UDFLoaders {
+		if err := ga.gs.Execute(hql); err != nil {
+			return errors.New(fmt.Sprintf("load UDF on goshine %s:%d failed", ga.cluster, ga.id))
+		}
+	}
+	return nil
+}
+
 func (nx *Nexus) initClusters() error {
 	nx.clusters = make(map[string][]*GoshineAgent)
 	for cluster_name, cluster_config := range nx.config.GoshineClusters {
@@ -194,10 +204,13 @@ func (nx *Nexus) initClusters() error {
 			g := goshine.NewGoshine(gconf.Host, gconf.Port, "user0", "passwd0", nx.config.Database)
 			if err := g.Connect(); err != nil {
 				logger.Warnf("init goshine agent %s:%d %s:%d failed, err: %s", cluster_name, i, gconf.Host, gconf.Port, err)
-				return errors.New("init goshine failed")
+				return errors.New("Init Goshine Failed")
 			}
 			logger.Infof("goshine agent %s:%d %s:%d activated", cluster_name, i, gconf.Host, gconf.Port)
-			nx.clusters[cluster_name][i] = &GoshineAgent{id: i, gs: g}
+			nx.clusters[cluster_name][i] = &GoshineAgent{cluster: cluster_name, id: i, gs: g}
+			if err := nx.loadUDF(nx.clusters[cluster_name][i]); err != nil {
+				return errors.New("Init Goshine Failed when loading UDF")
+			}
 		}
 	}
 	go nx.agentMaintenance()
@@ -251,9 +264,12 @@ func (nx *Nexus) agentMaintenance() {
 				if ga.gs.GetStatus() == goshine.GS_STATUS_ERROR {
 					logger.Warnf("agent %s:%d is in error status, trying to recover...", cluster_name, i)
 					if err := ga.gs.Connect(); err != nil {
-						logger.Warnf("agent%d recovering failed err: %s", i, err)
+						logger.Warnf("agent %s:%d recovering failed err: %s", cluster_name, i, err)
 					} else {
-						logger.Warnf("agent%d recovered", i)
+						logger.Warnf("agent %s:%d recovered", cluster_name, i)
+					}
+					if err := nx.loadUDF(ga); err != nil {
+						logger.Warnf("agent %s:%d recover failed when loading UDF", cluster_name, i)
 					}
 				}
 			}
